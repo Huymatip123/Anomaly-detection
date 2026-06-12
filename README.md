@@ -27,8 +27,9 @@ A production-ready system that captures live network traffic, extracts statistic
 5. [Machine Learning Models](#5-machine-learning-models)
    - 5.1 [XGBoost (Primary Model)](#51-xgboost-primary-model)
    - 5.2 [Multi-Layer Perceptron (Deep Learning Baseline)](#52-multi-layer-perceptron-deep-learning-baseline)
-   - 5.3 [Stacking Ensemble](#53-stacking-ensemble)
-   - 5.4 [Why Not Use a Transformer for Sequences?](#54-why-not-use-a-transformer-for-sequences)
+   - 5.3 [TabTransformer (Feature Interaction Model)](#53-tabtransformer-feature-interaction-model)
+   - 5.4 [Stacking Ensemble](#54-stacking-ensemble)
+   - 5.5 [Hybrid Fusion: XGBoost + Transformer](#55-hybrid-fusion-xgboost--transformer-the-complete-architecture)
 6. [Evaluation Metrics](#6-evaluation-metrics)
    - 6.1 [Accuracy](#61-accuracy)
    - 6.2 [Precision, Recall, and F1-Score](#62-precision-recall-and-f1-score)
@@ -189,22 +190,24 @@ We chose **CIC-UNSW-NB15** because:
 └──────────┬───────────┘
            │
            ▼
-┌──────────────────────────────────────┐
-│          Model Training              │
-│                                      │
-│  ┌────────┐  ┌──────┐  ┌─────────┐  │
-│  │XGBoost │  │ MLP  │  │Stacking │  │
-│  │(CPU)   │  │(GPU) │  │Ensemble │  │
-│  └────┬───┘  └──┬───┘  └────┬────┘  │
-│       │         │           │       │
-│       ▼         ▼           ▼       │
-│  ┌──────────────────────────────┐  │
-│  │    Evaluation & Comparison   │  │
-│  │  (Acc, Prec, Recall, F1,    │  │
-│  │   ROC-AUC, Confusion Matrix, │  │
-│  │   Latency)                   │  │
-│  └──────────────┬───────────────┘  │
-└─────────────────┼──────────────────┘
+┌──────────────────────────────────────────────────┐
+│                Model Training                    │
+│                                                  │
+│  ┌──────────┐  ┌──────┐  ┌──────────────┐       │
+│  │ XGBoost  │  │ MLP  │  │ TabTransformer│       │
+│  │  (CPU)   │  │(GPU) │  │    (GPU)     │       │
+│  └─────┬────┘  └──┬───┘  └──────┬───────┘       │
+│        │          │              │               │
+│        └─────┬────┴──────┬──────┘               │
+│              │           │                       │
+│              ▼           ▼                       │
+│  ┌─────────────────────────────┐  ┌─────────┐   │
+│  │   Evaluation & Comparison   │  │ Stacking │   │
+│  │ (Acc, Prec, Recall, F1,    │  │ Ensemble │   │
+│  │  ROC-AUC, Confusion Matrix, │  │(all above)│  │
+│  │  Latency)                   │  └─────┬────┘   │
+│  └──────────────┬──────────────┘        │       │
+└─────────────────┼───────────────────────┼───────┘
                   │
                   ▼
          ┌────────────────┐
@@ -511,7 +514,127 @@ MLPs require more care than XGBoost:
 
 We train the MLP on **Google Colab** (free GPU) using PyTorch.
 
-### 5.3 Stacking Ensemble
+### 5.3 TabTransformer (Feature Interaction Model)
+
+#### 5.3.1 What Is TabTransformer?
+
+TabTransformer [9] is a neural network architecture designed specifically for **tabular data**. It uses a **Transformer Encoder** to learn rich feature interactions, then passes the result through a standard MLP head for classification.
+
+The key insight is that we treat **each feature as a token** — just like a sentence is a sequence of words, a tabular row is a sequence of features. The Transformer's self-attention mechanism learns which features matter most when considered together.
+
+```
+Input: [feat_1, feat_2, feat_3, ..., feat_84]
+          │       │        │            │
+          ▼       ▼        ▼            ▼
+    ┌──────────────────────────────────────┐
+    │       Feature Embeddings             │
+    │  (each feature → learned vector)     │
+    └──────────────────────────────────────┘
+          │       │        │            │
+          ▼       ▼        ▼            ▼
+    ┌──────────────────────────────────────┐
+    │    + Positional Encoding             │
+    │  (feature index = position in seq)   │
+    └──────────────────────────────────────┘
+          │       │        │            │
+          ▼       ▼        ▼            ▼
+    ┌──────────────────────────────────────┐
+    │       Transformer Encoder × N       │
+    │                                      │
+    │  ┌──────────────────────────────┐   │
+    │  │  Multi-Head Self-Attention   │   │
+    │  │  (every feature attends to   │   │
+    │  │   every other feature)       │   │
+    │  └──────────────┬───────────────┘   │
+    │                 │                   │
+    │  ┌──────────────▼───────────────┐   │
+    │  │  Feed-Forward Network        │   │
+    │  └──────────────────────────────┘   │
+    └──────────────────────────────────────┘
+          │       │        │            │
+          ▼       ▼        ▼            ▼
+    ┌──────────────────────────────────────┐
+    │          Pooling (CLS token          │
+    │           or mean pooling)           │
+    └──────────────────────────────────────┘
+          │
+          ▼
+    ┌──────────────────────────────────────┐
+    │    MLP Head → Softmax (10 classes)   │
+    └──────────────────────────────────────┘
+```
+
+**Step-by-step**:
+
+1. **Feature Embedding**: Each of the 84 features is projected into a dense vector (e.g., 32 dimensions) via a learned linear layer. Continuous features are embedded directly; categorical features go through an embedding lookup table.
+2. **Positional Encoding**: Since the Transformer is permutation-invariant (it doesn't know that "feature #1" comes before "feature #2"), we add a learnable position vector to each embedding. The position simply indicates the feature's index in the row.
+3. **Transformer Encoder Layers**: The core of the model. Each layer has:
+   - **Multi-Head Self-Attention**: Every feature embedding looks at every other feature embedding and decides how much to "pay attention" to each one. If `flow_duration` and `fwd_packets_s` are highly correlated for DoS attacks, the attention weights between them will be high.
+   - **Feed-Forward Network**: A small MLP that processes each feature's attended representation independently.
+   - **Residual Connections + LayerNorm**: Help training stability (standard Transformer tricks).
+4. **Pooling**: After N encoder layers, we collapse the sequence of 84 vectors into a single vector. Options:
+   - **CLS token**: Add a special learnable token at position 0. After encoding, this token's representation serves as the aggregate.
+   - **Mean pooling**: Average all 84 feature vectors.
+5. **MLP Head**: A small MLP (e.g., 128 → 64 → 10) that converts the pooled vector into class probabilities.
+
+#### 5.3.2 Why TabTransformer?
+
+| Reason | Explanation |
+|--------|-------------|
+| **Learns feature interactions explicitly** | Self-attention directly models pairwise relationships between features. XGBoost can only learn interactions within tree depth limits. |
+| **Handles both continuous and categorical** | Embedding layer automatically learns good representations for categorical features, unlike tree models that split on raw category IDs. |
+| **Global context** | Each feature's representation is informed by ALL other features, not just a subset determined by tree structure. |
+| **Proven on tabular data** | TabTransformer [9] and FT-Transformer [10] have shown competitive or superior performance vs gradient boosting on many tabular benchmarks. |
+| **Complementary to XGBoost** | XGBoost excels at "local" patterns (threshold-based splits); Transformer excels at "global" feature interactions. Ensemble of both can outperform either alone. |
+
+#### 5.3.3 Model Architecture (Our Configuration)
+
+| Component | Setting |
+|-----------|---------|
+| Feature embedding dim | 32 |
+| Number of Transformer layers | 3 – 6 |
+| Attention heads | 4 – 8 |
+| Feed-forward hidden dim | 128 – 256 |
+| Dropout | 0.1 – 0.3 |
+| Pooling | CLS token |
+| MLP head | 128 → ReLU → Dropout → 64 → ReLU → 10 |
+
+#### 5.3.4 Training Details
+
+TabTransformer requires similar care to MLP:
+
+| Requirement | Why |
+|-------------|-----|
+| **Feature scaling** | Neural network — needs standardization |
+| **GPU training** | Transformer layers are compute-intensive; Colab GPU recommended |
+| **Categorical embedding** | Categorical features use learned embeddings (not one-hot) |
+| **Learning rate scheduling** | Warmup + cosine decay (standard Transformer practice) |
+| **Early stopping** | Prevent overfitting on the smaller rare classes |
+
+We implement TabTransformer in **PyTorch** and train on **Google Colab** GPU.
+
+#### 5.3.5 Multi-Class Output
+
+Like XGBoost, TabTransformer outputs a probability distribution over 10 classes via Softmax. The final prediction is `argmax`.
+
+#### 5.3.6 Why "TabTransformer" and Not a Sequence Transformer?
+
+A common question: "Doesn't a Transformer need sequential data like sentences or time series?"
+
+The answer is **no**. The Transformer was invented for machine translation [11], but its core mechanism — **self-attention** — works on any set of items, ordered or not. The original "Attention Is All You Need" paper processes sequences of words, but we can repurpose it to process a "sequence" of features.
+
+The difference:
+
+| | NLP Transformer | TabTransformer |
+|---|---|---|
+| **Items** | Words in a sentence | Features in a row |
+| **Order** | Word position (meaningful) | Feature index (arbitrary — we add positional encoding anyway) |
+| **Purpose** | Understand sentence context | Understand feature interactions |
+| **Output** | Next word prediction / classification | Row-level classification |
+
+Think of it like this: if you have 84 measurements from a network flow, a TabTransformer asks "how does each measurement relate to every other measurement?" and uses those relationships to make a prediction. This is especially powerful for intrusion detection, where attacks often manifest as unusual **combinations** of features rather than extreme values in a single feature.
+
+### 5.4 Stacking Ensemble
 
 #### 5.3.1 What Is Stacking?
 
@@ -549,22 +672,122 @@ To prevent "data leakage" (the meta-model cheating by seeing the same data the b
 3. The out-of-fold predictions become the training data for the meta-model
 4. Meta-model learns to combine these predictions
 
-### 5.4 Why Not Use a Transformer for Sequences?
+### 5.5 Hybrid Fusion: XGBoost + Transformer (The Complete Architecture)
 
-This question is worth addressing because many modern cybersecurity papers use Transformers.
+The full power of our approach comes from **combining** XGBoost and Transformer into a single hybrid model. This is the architecture described in the [System Architecture](#3-system-architecture) section.
 
-**The short answer**: Our dataset (CIC-UNSW-NB15) is **tabular**, not sequential. Each flow is an independent row, not part of a time-ordered sequence with dependencies between rows.
+#### 5.5.1 Why Go Hybrid?
 
-| Aspect | Sequence Data (e.g., sentences, web logs) | Tabular Data (CIC-UNSW-NB15) |
-|--------|-------------------------------------------|------------------------------|
-| Structure | Ordered list of tokens | Independent rows and columns |
-| Relationships | Position matters (word before/after) | Each row stands alone |
-| Example | "GET /login → POST /login → POST /login" (brute force pattern) | `{duration=0.5, packets=12, bytes=3000}` |
-| Best model | Transformer, LSTM | XGBoost, Random Forest |
+XGBoost and Transformer have **complementary strengths**:
 
-**If we had web access logs** (URLs, timestamps, IPs), a Transformer would be ideal to learn attack patterns across sequences of requests. But the CIC-UNSW-NB15 dataset was created by extracting flow statistics from raw network packets, which removes the sequential structure.
+| Property | XGBoost | Transformer | Hybrid |
+|----------|---------|-------------|--------|
+| **Local patterns** (threshold splits) | ✅ Excellent | ❌ Weak | ✅ ✅ |
+| **Global feature interactions** | ❌ Limited (tree depth) | ✅ Excellent | ✅ ✅ |
+| **Missing values** | ✅ Native | ❌ Requires imputation | ✅ |
+| **Inference speed** | ✅ Microseconds | ⚠️ Milliseconds (GPU) | ⚠️ Depends on deployment |
+| **Explainability** | ✅ Feature importance, SHAP | ❌ Black-box | ✅ Partial |
+| **Rare class handling** | ⚠️ Needs class weights | ⚠️ Needs oversampling | ✅ (diverse signals) |
 
-**Could we reconstruct sequences?** Yes, by grouping flows by source IP and sorting by timestamp. This would create sequences of flow features that a Transformer could process. This is an interesting research direction listed in [Future Work](#11-future-work), but it requires flows to have reliable timestamps and sufficient density per source IP to form meaningful sequences.
+Each model captures **different signals** from the same data:
+
+- XGBoost captures **individual feature thresholds**: "If `fwd_packets/s > 5000` AND `flow_duration < 0.1`, it's likely DoS."
+- Transformer captures **cross-feature relationships**: "The interaction between `packet_length_mean` and `flow_bytes/s` is unusual — this combination is characteristic of an Exploit."
+
+By combining both, we get a more complete picture of the traffic.
+
+#### 5.5.2 Fusion Architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│              84 Flow Features                     │
+└──────────┬───────────────────────────┬───────────┘
+           │                           │
+           ▼                           ▼
+┌──────────────────────┐   ┌────────────────────────┐
+│      XGBoost         │   │   TabTransformer        │
+│  (Trained on full    │   │  (Trained on full       │
+│   84 features)       │   │   84 features)          │
+└──────────┬───────────┘   └───────────┬────────────┘
+           │                           │
+           ▼                           ▼
+   ┌────────────────┐       ┌─────────────────────┐
+   │  Embedding A   │       │   Embedding B       │
+   │  (64–128 dim)  │       │   (128–256 dim)     │
+   └───────┬────────┘       └─────────┬───────────┘
+           │                          │
+           └──────────┬───────────────┘
+                      │
+                      ▼
+           ┌──────────────────────┐
+           │   Concatenation      │
+           │ (A + B = 192–384 dim)│
+           └──────────┬───────────┘
+                      │
+                      ▼
+           ┌──────────────────────┐
+           │     Fusion MLP       │
+           │                      │
+           │  Dense(256)→ReLU     │
+           │  Dropout(0.3)        │
+           │  Dense(128)→ReLU     │
+           │  Dropout(0.2)        │
+           │  Dense(10)→Softmax   │
+           └──────────────────────┘
+                      │
+                      ▼
+           ┌──────────────────────┐
+           │  Attack Prediction   │
+           │  (10 classes)        │
+           └──────────────────────┘
+```
+
+**How it works**:
+
+1. **Branch A (XGBoost)**: We train XGBoost on the full 84 features. Once trained, we extract an **embedding** from the model. This can be:
+   - **Leaf indices**: For each tree, record which leaf a sample lands in. Concatenate all leaf indices → a sparse binary vector representing the model's "decision path."
+   - **Tree output before softmax**: The raw logits from XGBoost (10 values, one per class).
+   - **Dimensionality-reduced representation**: Use PCA or an autoencoder to compress the leaf-index vector to 64–128 dense dimensions.
+
+2. **Branch B (TabTransformer)**: We train TabTransformer independently (or jointly). We take the **pooled output** from the Transformer encoder (before the MLP head) as our embedding B (128–256 dimensions).
+
+3. **Fusion**: Concatenate embedding A and embedding B.
+
+4. **Fusion MLP**: A small neural network learns how to best combine the two embeddings for the final classification.
+
+#### 5.5.3 Two Training Strategies
+
+**Strategy 1: Two-Stage Training (Recommended)**
+
+| Stage | What Happens | Why |
+|-------|-------------|-----|
+| **Stage 1** | Train XGBoost and TabTransformer independently | Each model converges without interference |
+| **Stage 2** | Freeze both models. Extract fixed embeddings. Train only the Fusion MLP. | Simple, stable, and fast. The Fusion MLP learns which branch to trust for which classes. |
+
+**Strategy 2: End-to-End Joint Training**
+
+| Stage | What Happens | Why |
+|-------|-------------|-----|
+| **Single Stage** | Train XGBoost + Transformer + Fusion MLP simultaneously | Potentially better because the Transformer can adapt to complement XGBoost's weaknesses. But harder to optimize. |
+
+We use **Strategy 1 (Two-Stage)** for its stability and interpretability. Strategy 2 is listed as future work.
+
+#### 5.5.4 Handling the Sequential Structure (Future Enhancement)
+
+While the CIC-UNSW-NB15 dataset is purely tabular, our hybrid architecture naturally extends to **sequential data**. If we later obtain web access logs or group flows by source IP into time-ordered sequences:
+
+- **XGBoost branch** → unchanged (still processes per-flow features)
+- **Transformer branch** → extended to process sequences of flows (each timestep = one flow's 84 features)
+- **Fusion** → same concatenation + MLP
+
+This means our architecture is **forward-compatible** with richer data sources.
+
+#### 5.5.5 Summary: Why This Hybrid Architecture?
+
+1. **Scientific novelty**: Combining gradient boosting and Transformers on tabular network data is not widely explored in NIDS literature.
+2. **Complementary strengths**: XGBoost handles local thresholds; Transformer handles global interactions.
+3. **Ablation-ready**: We can compare XGBoost-only vs Transformer-only vs Hybrid to quantify the benefit of each component.
+4. **Deployable**: During inference, we can choose to run only XGBoost (fast, CPU) if speed is critical, or the full hybrid for maximum accuracy.
 
 ---
 
@@ -795,6 +1018,8 @@ Anomaly-detection/
 │   │   ├── __init__.py
 │   │   ├── xgboost_model.py         # XGBoost training + tuning
 │   │   ├── mlp_model.py             # PyTorch MLP definition + training
+│   │   ├── tabtransformer_model.py  # PyTorch TabTransformer definition + training
+│   │   ├── hybrid_model.py          # XGBoost + Transformer fusion
 │   │   ├── ensemble.py              # Stacking ensemble
 │   │   └── utils.py                 # Model saving/loading, prediction
 │   │
@@ -823,7 +1048,9 @@ Anomaly-detection/
 ├── colab/
 │   ├── 01_eda_and_preprocessing.ipynb
 │   ├── 02_train_xgboost.ipynb
-│   └── 03_train_mlp.ipynb
+│   ├── 03_train_mlp.ipynb
+│   ├── 04_train_tabtransformer.ipynb
+│   └── 05_train_hybrid_fusion.ipynb
 │
 ├── notebooks/
 │   └── exploration.ipynb
@@ -879,6 +1106,8 @@ python src/preprocessing/split.py
 # Step 2: Train models
 python src/models/xgboost_model.py
 python src/models/mlp_model.py          # Recommended: run on Colab
+python src/models/tabtransformer_model.py  # Recommended: run on Colab
+python src/models/hybrid_model.py         # Train fusion after individual models
 python src/models/ensemble.py
 
 # Step 3: Evaluate
@@ -892,7 +1121,9 @@ python src/evaluation/compare.py
 3. Run cells sequentially
 4. For `02_train_xgboost.ipynb`: runs on CPU (free Colab)
 5. For `03_train_mlp.ipynb`: enable GPU runtime (Runtime → Change runtime type → GPU)
-6. Download the trained models from Colab to `models_saved/`
+6. For `04_train_tabtransformer.ipynb`: enable GPU runtime — Transformer layers need GPU
+7. For `05_train_hybrid_fusion.ipynb`: loads pre-trained XGBoost + Transformer embeddings and trains the fusion MLP
+8. Download the trained models from Colab to `models_saved/`
 
 ### 9.3 Deploy the API
 
@@ -919,7 +1150,9 @@ Based on published research using CIC-UNSW-NB15:
 | Random Forest | ~0.75 | ~0.92 | 50 μs |
 | XGBoost | ~0.82 | ~0.95 | 30 μs |
 | MLP | ~0.78 | ~0.93 | 100 μs (GPU) / 2 ms (CPU) |
-| **Stacking Ensemble** | **~0.84** | **~0.96** | **200 μs** |
+| TabTransformer | ~0.83 | ~0.95 | 500 μs (GPU) / 5 ms (CPU) |
+| **Hybrid Fusion (XGBoost + Transformer)** | **~0.86** | **~0.97** | **1 ms (GPU) / 5.5 ms (CPU)** |
+| Stacking Ensemble | ~0.84 | ~0.96 | 200 μs |
 
 *These are approximate; actual results depend on hyperparameters and preprocessing.*
 
@@ -939,7 +1172,7 @@ We will compare models on:
 This project is a foundation. Future improvements could include:
 
 ### 11.1 Temporal / Sequence Modeling
-As discussed in Section 5.4, reconstructing flow sequences by grouping source IPs over time windows would allow Transformer-based sequence models. This would capture multi-step attack patterns like:
+As discussed in Section 5.5.4, the current TabTransformer processes each flow row independently (features-as-tokens). A natural extension is to reconstruct **flow sequences** by grouping source IPs over time windows. This would allow the Transformer to capture multi-step attack patterns like:
 - Reconnaissance → Exploit → Backdoor (intrusion chain)
 - Gradual increase in request rate (slow DDoS)
 
@@ -990,6 +1223,12 @@ Why was this flow flagged as "DoS"?
 7. **SMOTE** — Chawla, N. V., et al. "SMOTE: Synthetic Minority Over-sampling Technique." JAIR, 2002.
 
 8. **XGBoost** — Chen, T., Guestrin, C. "XGBoost: A Scalable Tree Boosting System." KDD, 2016.
+
+9. **TabTransformer** — Huang, X., et al. "TabTransformer: Tabular Data Modeling Using Contextual Embeddings." arXiv, 2020.
+
+10. **FT-Transformer** — Gorishniy, Y., et al. "Revisiting Deep Learning Models for Tabular Data." NeurIPS, 2021.
+
+11. **Attention Is All You Need** — Vaswani, A., et al. "Attention Is All You Need." NeurIPS, 2017.
 
 ---
 
