@@ -1,0 +1,6 @@
+{
+  "model": "XGBoost",
+  "best_iteration": 499,
+  "test_accurancy": 0.9265345002083706,
+  "n_estimators": 500
+}
