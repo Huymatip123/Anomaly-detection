@@ -94,7 +94,7 @@ CICFlowMeter [2] is a tool developed by UNB that:
 
 1. Reads raw network traffic (a `.pcap` file — think of it as an audio recording of network traffic)
 2. Groups packets into flows (by matching source IP, destination IP, ports, and protocol)
-3. Computes **84 statistical features** for each flow
+3. Computes **76 statistical features** for each flow
 
 These features include things like:
 
@@ -108,7 +108,7 @@ These features include things like:
 | **Flags** | TCP flags (SYN, ACK, FIN, RST, etc.) |
 | **Idle / Active** | How long the flow was idle vs active |
 
-All 84 features are **numerical** — no text, no images, no sequences of requests. Each flow becomes one row of numbers. This is called **tabular data** (like a spreadsheet).
+All 76 features are **numerical** — no text, no images, no categorical columns, no sequences of requests. Each flow becomes one row of numbers. This is called **tabular data** (like a spreadsheet).
 
 ### 2.3 Dataset Statistics
 
@@ -160,7 +160,7 @@ We chose **CIC-UNSW-NB15** because:
 - **Modern**: Traffic generated in 2015, features re-extracted in 2024 with CICFlowMeter
 - **Size**: 448K flows is large enough to train good models but small enough to run on a laptop
 - **Classes**: 10 categories cover a wide range of real attack types
-- **Clean**: Comes pre-processed with `Data.csv` + `Label.csv` (80:20 ratio)
+- **Clean**: Comes pre-processed with `Dataset.csv` + `Label.csv` (80:20 ratio). The dataset is already cleaned — no missing values, no infinity, all 76 features are numerical. No categorical encoding needed.
 - **Recent citation**: Published with a 2024 paper [4], making it academically current
 
 ---
@@ -172,8 +172,9 @@ We chose **CIC-UNSW-NB15** because:
 ```
 ┌──────────────────────┐
 │   CIC-UNSW-NB15 CSV  │
-│   (Data.csv, 448K    │
-│    flows, 84 feat.)  │
+│   (Dataset.csv,      │
+│    447K flows, 76    │
+│    features)          │
 └──────────┬───────────┘
            │
            ▼
@@ -181,7 +182,7 @@ We chose **CIC-UNSW-NB15** because:
 │    Preprocessing     │
 │  ┌────────────────┐  │
 │  │ • Clean NaN/Inf│  │
-│  │ • Encode cats  │  │
+ │  │ • No encoding  │  │
 │  │ • Scale (MLP)  │  │
 │  │ • SMOTE (opt.) │  │
 │  │ • Train/Val/   │  │
@@ -232,7 +233,7 @@ We chose **CIC-UNSW-NB15** because:
 │                      │
 │  • Reads packets     │
 │  • Groups into flows │
-│  • Computes 84       │
+│  • Computes 76       │
 │    features          │
 └──────────┬───────────┘
            │
@@ -260,10 +261,10 @@ We chose **CIC-UNSW-NB15** because:
 
 ### 3.3 How the Two Pipelines Connect
 
-The key insight is that **both pipelines process the same 84 features in the same format**:
+The key insight is that **both pipelines process the same 76 features in the same format**:
 
-- **During training**: We use the pre-computed CSV from CIC-UNSW-NB15. The model learns patterns: "If feature X is high and feature Y is low, it's probably a DoS attack."
-- **During deployment**: We use CICFlowMeter on live traffic to compute the **same 84 features**. The same model then applies what it learned.
+- **During training**: We use `Dataset.csv` from CIC-UNSW-NB15 (447,915 rows, 76 features). The model learns patterns: "If feature X is high and feature Y is low, it's probably a DoS attack."
+- **During deployment**: We use CICFlowMeter on live traffic to compute the **same 76 features**. The same model then applies what it learned.
 
 This is why choosing CICFlowMeter as the feature extractor is important — it ensures the training data and the live data are in the same "language."
 
@@ -296,28 +297,25 @@ Machine learning models cannot process NaN or Inf values. They simply crash.
 
 **Code logic**: Scan every column. If NaN → fill with mean of that column. If Inf → replace with max finite value. If all values are NaN (useless column) → drop the column entirely.
 
-### 4.3 Categorical Features
+### 4.3 Why No Categorical Encoding Is Needed
 
-Some columns contain text, not numbers:
+The CIC-UNSW-NB15 dataset (in its `Dataset.csv` form) contains **zero categorical columns**. All 76 features are **numerical continuous** — numbers that have meaningful arithmetic (greater than, less than, differences).
 
-```
-proto: TCP, UDP, ICMP, ...
-state: FIN, CON, RST, ...
-service: HTTP, DNS, FTP, ...
-```
+This is because the dataset has already been processed by CICFlowMeter, which:
+1. Converts raw packets into numerical flow statistics (duration, packet counts, byte counts, IAT, TCP flags...)
+2. Removes the original 5-tuple identifiers (source/destination IPs, ports)
 
-A model can only multiply numbers, not compare strings. We need to convert text to numbers.
+**What this means for our project**:
+- No `LabelEncoder` needed
+- No `OneHotEncoder` needed
+- No `label_encoders.pkl` file
+- No handling of unseen categories at deployment
 
-**Two approaches**:
+**But what about the raw CICFlowMeter output?** The full `CICFlowMeter_out.csv` (not used in this project) does contain `Dst Port` and `Protocol` as categorical columns. However:
+- `Dst Port` is a numeric port number (22, 80, 443...) — but port numbers are categorical labels, not measurements
+- `Protocol` is a numeric protocol number (6=TCP, 17=UDP, 1=ICMP)
 
-| Method | What It Does | Analogy | When to Use |
-|--------|-------------|---------|-------------|
-| **Label Encoding** | Assigns each category a number: TCP → 0, UDP → 1, ICMP → 2 | Giving each student a student ID | Works for tree models (XGBoost) |
-| **One-Hot Encoding** | Creates a new column for each category: `is_TCP` (0/1), `is_UDP` (0/1), `is_ICMP` (0/1) | Multiple choice: pick one option | Required for neural networks (MLP) |
-
-**Our choice**: Use **Label Encoding** for XGBoost (trees handle ordinal encoding naturally). Use **One-Hot Encoding** for MLP (neural networks need binary inputs).
-
-**Important**: We must save the encoding mapping during training and reuse it during deployment. If the training data has TCP → 0, UDP → 1, then live data must use the same mapping.
+If those columns were present, we would need label encoding. But in `Dataset.csv` (our actual training file), they have been removed. The model learns purely from flow statistics.
 
 ### 4.4 Feature Scaling
 
@@ -332,6 +330,11 @@ The duration feature is **10,000x larger** than the packets-per-second feature.
 
 - **For tree models (XGBoost)**: This does not matter. Trees make decisions by comparing values ("is duration > 500?") regardless of scale. **No scaling needed.**
 - **For neural networks (MLP)**: This matters a lot. Neural networks use gradient descent, which works best when all features are roughly the same scale (usually 0 to 1 or -1 to 1). Without scaling, the duration feature dominates the learning process. **Scaling is required.**
+
+**Our actual output**:
+- `data/processed/split/X_train.npy` (unscaled — for XGBoost)
+- `data/processed/split/X_train_scale.npy` (scaled — for MLP/Transformer)
+- `data/processed/scaler.pkl` (fitted `StandardScaler` for deployment)
 
 **Standard Scaling (Z-score)**: `x_new = (x - mean) / standard_deviation`
 
@@ -464,12 +467,14 @@ The final prediction is the class with the highest probability (`argmax`).
 
 ### 5.2 Multi-Layer Perceptron (Deep Learning Baseline)
 
+**Status**: 🔜 Planned — not yet implemented. Requires Colab GPU.
+
 #### 5.2.1 What Is an MLP?
 
 A **Multi-Layer Perceptron** is the simplest form of neural network. It is a mathematical function composed of layers:
 
 ```
-Input (84 features)
+Input (76 features)
     │
     ▼
 Dense Layer 1 (256 neurons) → ReLU → Dropout(0.3)
@@ -516,6 +521,8 @@ We train the MLP on **Google Colab** (free GPU) using PyTorch.
 
 ### 5.3 TabTransformer (Feature Interaction Model)
 
+**Status**: 🔜 Planned — not yet implemented. Requires Colab GPU.
+
 #### 5.3.1 What Is TabTransformer?
 
 TabTransformer [9] is a neural network architecture designed specifically for **tabular data**. It uses a **Transformer Encoder** to learn rich feature interactions, then passes the result through a standard MLP head for classification.
@@ -523,7 +530,7 @@ TabTransformer [9] is a neural network architecture designed specifically for **
 The key insight is that we treat **each feature as a token** — just like a sentence is a sequence of words, a tabular row is a sequence of features. The Transformer's self-attention mechanism learns which features matter most when considered together.
 
 ```
-Input: [feat_1, feat_2, feat_3, ..., feat_84]
+Input: [feat_1, feat_2, feat_3, ..., feat_76]
           │       │        │            │
           ▼       ▼        ▼            ▼
     ┌──────────────────────────────────────┐
@@ -566,15 +573,15 @@ Input: [feat_1, feat_2, feat_3, ..., feat_84]
 
 **Step-by-step**:
 
-1. **Feature Embedding**: Each of the 84 features is projected into a dense vector (e.g., 32 dimensions) via a learned linear layer. Continuous features are embedded directly; categorical features go through an embedding lookup table.
+1. **Feature Embedding**: Each of the 76 features is projected into a dense vector (e.g., 32 dimensions) via a learned linear layer. Continuous features are embedded directly.
 2. **Positional Encoding**: Since the Transformer is permutation-invariant (it doesn't know that "feature #1" comes before "feature #2"), we add a learnable position vector to each embedding. The position simply indicates the feature's index in the row.
 3. **Transformer Encoder Layers**: The core of the model. Each layer has:
    - **Multi-Head Self-Attention**: Every feature embedding looks at every other feature embedding and decides how much to "pay attention" to each one. If `flow_duration` and `fwd_packets_s` are highly correlated for DoS attacks, the attention weights between them will be high.
    - **Feed-Forward Network**: A small MLP that processes each feature's attended representation independently.
    - **Residual Connections + LayerNorm**: Help training stability (standard Transformer tricks).
-4. **Pooling**: After N encoder layers, we collapse the sequence of 84 vectors into a single vector. Options:
+4. **Pooling**: After N encoder layers, we collapse the sequence of 76 vectors into a single vector. Options:
    - **CLS token**: Add a special learnable token at position 0. After encoding, this token's representation serves as the aggregate.
-   - **Mean pooling**: Average all 84 feature vectors.
+   - **Mean pooling**: Average all 76 feature vectors.
 5. **MLP Head**: A small MLP (e.g., 128 → 64 → 10) that converts the pooled vector into class probabilities.
 
 #### 5.3.2 Why TabTransformer?
@@ -582,7 +589,7 @@ Input: [feat_1, feat_2, feat_3, ..., feat_84]
 | Reason | Explanation |
 |--------|-------------|
 | **Learns feature interactions explicitly** | Self-attention directly models pairwise relationships between features. XGBoost can only learn interactions within tree depth limits. |
-| **Handles both continuous and categorical** | Embedding layer automatically learns good representations for categorical features, unlike tree models that split on raw category IDs. |
+| **Handles continuous features natively** | Unlike the original TabTransformer paper (which focused on categorical columns), we embed continuous features directly with linear projections. Our dataset has all 76 features continuous, so no categorical embedding is needed. |
 | **Global context** | Each feature's representation is informed by ALL other features, not just a subset determined by tree structure. |
 | **Proven on tabular data** | TabTransformer [9] and FT-Transformer [10] have shown competitive or superior performance vs gradient boosting on many tabular benchmarks. |
 | **Complementary to XGBoost** | XGBoost excels at "local" patterns (threshold-based splits); Transformer excels at "global" feature interactions. Ensemble of both can outperform either alone. |
@@ -607,7 +614,7 @@ TabTransformer requires similar care to MLP:
 |-------------|-----|
 | **Feature scaling** | Neural network — needs standardization |
 | **GPU training** | Transformer layers are compute-intensive; Colab GPU recommended |
-| **Categorical embedding** | Categorical features use learned embeddings (not one-hot) |
+| **Feature embedding** | Each continuous feature is projected via a learnable linear layer to a 32-dim embedding |
 | **Learning rate scheduling** | Warmup + cosine decay (standard Transformer practice) |
 | **Early stopping** | Prevent overfitting on the smaller rare classes |
 
@@ -632,11 +639,13 @@ The difference:
 | **Purpose** | Understand sentence context | Understand feature interactions |
 | **Output** | Next word prediction / classification | Row-level classification |
 
-Think of it like this: if you have 84 measurements from a network flow, a TabTransformer asks "how does each measurement relate to every other measurement?" and uses those relationships to make a prediction. This is especially powerful for intrusion detection, where attacks often manifest as unusual **combinations** of features rather than extreme values in a single feature.
+Think of it like this: if you have 76 measurements from a network flow, a TabTransformer asks "how does each measurement relate to every other measurement?" and uses those relationships to make a prediction. This is especially powerful for intrusion detection, where attacks often manifest as unusual **combinations** of features rather than extreme values in a single feature.
 
 ### 5.4 Stacking Ensemble
 
-#### 5.3.1 What Is Stacking?
+**Status**: 🔜 Planned — not yet implemented.
+
+#### 5.4.1 What Is Stacking?
 
 Stacking is a technique where we combine multiple different models to make better predictions. The idea:
 
@@ -674,6 +683,8 @@ To prevent "data leakage" (the meta-model cheating by seeing the same data the b
 
 ### 5.5 Hybrid Fusion: XGBoost + Transformer (The Complete Architecture)
 
+**Status**: 🔜 Planned — requires both XGBoost and TabTransformer models to be trained first.
+
 The full power of our approach comes from **combining** XGBoost and Transformer into a single hybrid model. This is the architecture described in the [System Architecture](#3-system-architecture) section.
 
 #### 5.5.1 Why Go Hybrid?
@@ -700,14 +711,14 @@ By combining both, we get a more complete picture of the traffic.
 
 ```
 ┌──────────────────────────────────────────────────┐
-│              84 Flow Features                     │
+│              76 Flow Features                      │
 └──────────┬───────────────────────────┬───────────┘
            │                           │
            ▼                           ▼
 ┌──────────────────────┐   ┌────────────────────────┐
 │      XGBoost         │   │   TabTransformer        │
 │  (Trained on full    │   │  (Trained on full       │
-│   84 features)       │   │   84 features)          │
+│   76 features)       │   │   76 features)          │
 └──────────┬───────────┘   └───────────┬────────────┘
            │                           │
            ▼                           ▼
@@ -744,7 +755,7 @@ By combining both, we get a more complete picture of the traffic.
 
 **How it works**:
 
-1. **Branch A (XGBoost)**: We train XGBoost on the full 84 features. Once trained, we extract an **embedding** from the model. This can be:
+1. **Branch A (XGBoost)**: We train XGBoost on the full 76 features. Once trained, we extract an **embedding** from the model. This can be:
    - **Leaf indices**: For each tree, record which leaf a sample lands in. Concatenate all leaf indices → a sparse binary vector representing the model's "decision path."
    - **Tree output before softmax**: The raw logits from XGBoost (10 values, one per class).
    - **Dimensionality-reduced representation**: Use PCA or an autoencoder to compress the leaf-index vector to 64–128 dense dimensions.
@@ -777,7 +788,7 @@ We use **Strategy 1 (Two-Stage)** for its stability and interpretability. Strate
 While the CIC-UNSW-NB15 dataset is purely tabular, our hybrid architecture naturally extends to **sequential data**. If we later obtain web access logs or group flows by source IP into time-ordered sequences:
 
 - **XGBoost branch** → unchanged (still processes per-flow features)
-- **Transformer branch** → extended to process sequences of flows (each timestep = one flow's 84 features)
+- **Transformer branch** → extended to process sequences of flows (each timestep = one flow's 76 features)
 - **Fusion** → same concatenation + MLP
 
 This means our architecture is **forward-compatible** with richer data sources.
@@ -910,11 +921,10 @@ for pkt in packets:
 flows = meter.flows_to_dataframe()
 ```
 
-The output is a DataFrame with the same 84 features used during training. This ensures compatibility with the trained model.
+The output is a DataFrame with the same 76 features used during training. This ensures compatibility with the trained model.
 
 **Important preprocessing for live data**: Apply the **same** transformations learned during training:
-- Load the saved LabelEncoder for categorical features
-- Load the saved StandardScaler parameters
+- Load the saved StandardScaler (`scaler.pkl`)
 - Apply the same NaN/Inf handling
 
 ### 7.3 FastAPI Inference Server
@@ -953,7 +963,7 @@ POST /predict
   "bwd_packet_length_mean": 380.2,
   "flow_packets_s": 25.3,
   "flow_bytes_s": 14500.0,
-  ... (all 84 features)
+  ... (all 76 features)
 }
 ```
 
@@ -980,85 +990,44 @@ POST /predict
 
 ---
 
-## 8. Project Structure
+## 8. Project Structure (Actual)
 
 ```
 Anomaly-detection/
 │
-├── README.md
-├── requirements.txt
-├── setup.py
+├── README.md                        # This file
+├── requirements.txt                 # Python dependencies
 │
 ├── data/
-│   ├── raw/                          # Download CIC-UNSW-NB15 here
-│   │   ├── Data.csv
-│   │   └── Label.csv
-│   └── processed/                    # Output of preprocessing script
-│       ├── X_train.npy
-│       ├── X_val.npy
-│       ├── X_test.npy
-│       ├── y_train.npy
-│       ├── y_val.npy
-│       └── y_test.npy
-│
-├── src/
-│   ├── preprocessing/
-│   │   ├── __init__.py
-│   │   ├── clean.py                 # Handle NaN, Inf, drop useless columns
-│   │   ├── encode.py                # Label encoding / one-hot encoding
-│   │   ├── scale.py                 # StandardScaler wrapper
-│   │   ├── balance.py               # SMOTE oversampling
-│   │   └── split.py                 # Stratified train/val/test split
-│   │
-│   ├── features/
-│   │   ├── __init__.py
-│   │   └── cic_features.py          # Feature names, metadata, groupings
-│   │
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── xgboost_model.py         # XGBoost training + tuning
-│   │   ├── mlp_model.py             # PyTorch MLP definition + training
-│   │   ├── tabtransformer_model.py  # PyTorch TabTransformer definition + training
-│   │   ├── hybrid_model.py          # XGBoost + Transformer fusion
-│   │   ├── ensemble.py              # Stacking ensemble
-│   │   └── utils.py                 # Model saving/loading, prediction
-│   │
-│   ├── evaluation/
-│   │   ├── __init__.py
-│   │   ├── metrics.py               # All evaluation metrics
-│   │   ├── visualize.py             # Confusion matrix, ROC curves
-│   │   └── compare.py               # Compare all models side-by-side
-│   │
-│   ├── pipeline/
-│   │   ├── __init__.py
-│   │   ├── capture.py               # Live traffic capture (tcpdump wrapper)
-│   │   └── flow_extractor.py        # CICFlowMeter integration
-│   │
-│   └── deployment/
-│       ├── __init__.py
-│       └── api.py                    # FastAPI server
+│   ├── raw/                         # CIC-UNSW-NB15 dataset
+│   │   ├── Dataset.csv              # 447,915 rows × 76 features
+│   │   └── Label.csv                # 447,915 labels, 10 classes
+│   └── processed/                   # Output of preprocessing notebook
+│       ├── split/
+│       │   ├── X_train.npy          # 313,540 × 76 (unscaled)
+│       │   ├── X_train_scale.npy    # 313,540 × 76 (scaled)
+│       │   ├── X_val.npy            # 67,187 × 76
+│       │   ├── X_val_scale.npy      # 67,187 × 76
+│       │   ├── X_test.npy           # 67,188 × 76
+│       │   ├── X_test_scale.npy     # 67,188 × 76
+│       │   ├── y_train.npy          # 313,540
+│       │   ├── y_val.npy            # 67,187
+│       │   └── y_test.npy           # 67,188
+│       └── scaler.pkl               # Fitted StandardScaler
 │
 ├── models_saved/                    # Trained model artifacts
-│   ├── xgboost_model.json
-│   ├── mlp_model.pth
-│   ├── stacking_model.pkl
-│   ├── label_encoders.pkl
-│   └── scaler.pkl
-│
-├── colab/
-│   ├── 01_eda_and_preprocessing.ipynb
-│   ├── 02_train_xgboost.ipynb
-│   ├── 03_train_mlp.ipynb
-│   ├── 04_train_tabtransformer.ipynb
-│   └── 05_train_hybrid_fusion.ipynb
+│   ├── xgboost_v1.json              # XGBoost ✓ (trained)
+│   ├── mlp_model.pth                # MLP 🔜 (planned)
+│   ├── tabtransformer_model.pth     # TabTransformer 🔜 (planned)
+│   ├── hybrid_fusion.pth            # Hybrid Fusion 🔜 (planned)
+│   └── scaler.pkl                   # Copy for deployment
 │
 ├── notebooks/
-│   └── exploration.ipynb
+│   ├── preprocess.ipynb             # Clean, split, scale, save
+│   └── exploration.ipynb            # Exploratory data analysis
 │
-└── tests/
-    ├── test_preprocessing.py
-    ├── test_models.py
-    └── test_api.py
+└── docs/
+    └── cicflowmeter-and-flow-definition.md  # CICFlowMeter guide
 ```
 
 ---
@@ -1091,41 +1060,34 @@ pip install -r requirements.txt
 - `matplotlib`, `seaborn` — visualization
 - `jupyter` — notebooks
 
-### 9.2 Preprocessing & Training (Local or Colab)
-
-**Option A: Run Python scripts locally**
+### 9.2 Preprocessing (Run Locally)
 
 ```bash
-# Step 1: Preprocess
-python src/preprocessing/clean.py
-python src/preprocessing/encode.py
-python src/preprocessing/scale.py
-python src/preprocessing/balance.py
-python src/preprocessing/split.py
-
-# Step 2: Train models
-python src/models/xgboost_model.py
-python src/models/mlp_model.py          # Recommended: run on Colab
-python src/models/tabtransformer_model.py  # Recommended: run on Colab
-python src/models/hybrid_model.py         # Train fusion after individual models
-python src/models/ensemble.py
-
-# Step 3: Evaluate
-python src/evaluation/compare.py
+# Run the preprocessing notebook
+jupyter notebook notebooks/preprocess.ipynb
 ```
 
-**Option B: Run notebooks on Google Colab (recommended for GPU training)**
+The notebook does everything: load data, clean (no NaN/Inf), stratified split (70/15/15), StandardScaler fit on train, save all arrays to `data/processed/split/`.
 
-1. Upload the `colab/` folder to Google Drive
-2. Open `colab/01_eda_and_preprocessing.ipynb` in Colab
-3. Run cells sequentially
-4. For `02_train_xgboost.ipynb`: runs on CPU (free Colab)
-5. For `03_train_mlp.ipynb`: enable GPU runtime (Runtime → Change runtime type → GPU)
-6. For `04_train_tabtransformer.ipynb`: enable GPU runtime — Transformer layers need GPU
-7. For `05_train_hybrid_fusion.ipynb`: loads pre-trained XGBoost + Transformer embeddings and trains the fusion MLP
-8. Download the trained models from Colab to `models_saved/`
+### 9.3 Training
 
-### 9.3 Deploy the API
+```bash
+# Train XGBoost (CPU, fast, local)
+# Uses notebooks/preprocess.ipynb output; runs entirely in a notebook or script
+python -c "
+import numpy as np, xgboost as xgb
+X = np.load('data/processed/split/X_train.npy')
+y = np.load('data/processed/split/y_train.npy').flatten()
+# ... (see notebooks/ for full training code)
+model = xgb.XGBClassifier(...)
+model.fit(X, y)
+model.save_model('models_saved/xgboost_v1.json')
+"
+
+# MLP, TabTransformer, Hybrid — run on Colab GPU (notebooks provided in colab/)
+```
+
+### 9.3 Deploy the API (Not Yet Built)
 
 ```bash
 # Start the FastAPI server
@@ -1139,31 +1101,30 @@ curl -X POST "http://localhost:8000/predict" \
 
 ---
 
-## 10. Results & Discussion
+## 10. Results
 
-### 10.1 Expected Outcomes
+### 10.1 XGBoost v1 (Trained)
 
-Based on published research using CIC-UNSW-NB15:
+| Metric | Value | Notes |
+|--------|-------|-------|
+| **Class weights** | Benign=0.125, Generic=1.4, ... Worms=182.3 | `n_samples / (n_classes × count_per_class)` |
+| **Training set** | 313,540 flows (70%) | No scaling needed |
+| **Validation set** | 67,187 flows (15%) | |
+| **Test set** | 67,188 flows (15%) | |
+| **Training time** | ~5 min (CPU, macOS M4) | |
+| **Model size** | ~2 MB (`xgboost_v1.json`) | |
 
-| Model | Macro F1 | ROC-AUC | Inference Time |
-|-------|----------|---------|---------------|
-| Random Forest | ~0.75 | ~0.92 | 50 μs |
-| XGBoost | ~0.82 | ~0.95 | 30 μs |
-| MLP | ~0.78 | ~0.93 | 100 μs (GPU) / 2 ms (CPU) |
-| TabTransformer | ~0.83 | ~0.95 | 500 μs (GPU) / 5 ms (CPU) |
-| **Hybrid Fusion (XGBoost + Transformer)** | **~0.86** | **~0.97** | **1 ms (GPU) / 5.5 ms (CPU)** |
-| Stacking Ensemble | ~0.84 | ~0.96 | 200 μs |
+Training parameters: `n_estimators=300`, `max_depth=8`, `learning_rate=0.1`, `subsample=0.8`, `colsample_bytree=0.8`, `eval_metric=mlogloss`, `early_stopping_rounds=20`.
 
-*These are approximate; actual results depend on hyperparameters and preprocessing.*
+*Full test-set metrics (F1, precision, recall, confusion matrix) are computed next.*
 
-### 10.2 Model Comparison
+### 10.2 MLP, TabTransformer, Hybrid — Not Yet Implemented
 
-We will compare models on:
-
-1. **Overall performance**: Macro F1, Weighted F1, ROC-AUC
-2. **Per-class performance**: Which models handle rare classes (Worms, Analysis, Backdoor) best?
-3. **Efficiency**: Training time, inference latency, model size
-4. **Explainability**: Can we understand why the model makes certain predictions? (XGBoost feature importance vs MLP black-box)
+| Model | Status | Where to Run |
+|-------|--------|-------------|
+| MLP | 🔜 Planned | Colab GPU |
+| TabTransformer | 🔜 Planned | Colab GPU |
+| Hybrid Fusion | 🔜 Planned | Colab GPU |
 
 ---
 
