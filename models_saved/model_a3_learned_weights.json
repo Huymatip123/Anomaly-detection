@@ -1,0 +1,42 @@
+{
+    "Benign": {
+        "XGBoost_Weight": 0.9999996423721313,
+        "Transformer_Weight": 3.0078476243033947e-07
+    },
+    "Analysis": {
+        "XGBoost_Weight": 0.9999995231628418,
+        "Transformer_Weight": 4.624340022019169e-07
+    },
+    "Backdoor": {
+        "XGBoost_Weight": 0.9999998807907104,
+        "Transformer_Weight": 1.772281592593572e-07
+    },
+    "DoS": {
+        "XGBoost_Weight": 0.9999996423721313,
+        "Transformer_Weight": 3.164854547321738e-07
+    },
+    "Exploits": {
+        "XGBoost_Weight": 0.9999997615814209,
+        "Transformer_Weight": 2.9621139674418373e-07
+    },
+    "Fuzzers": {
+        "XGBoost_Weight": 0.9999997615814209,
+        "Transformer_Weight": 2.8576110366884677e-07
+    },
+    "Generic": {
+        "XGBoost_Weight": 0.9999996423721313,
+        "Transformer_Weight": 3.5253179930805345e-07
+    },
+    "Reconnaissance": {
+        "XGBoost_Weight": 0.9999992847442627,
+        "Transformer_Weight": 7.004646818131732e-07
+    },
+    "Shellcode": {
+        "XGBoost_Weight": 0.9999997615814209,
+        "Transformer_Weight": 2.1662197013938567e-07
+    },
+    "Worms": {
+        "XGBoost_Weight": 0.9999998807907104,
+        "Transformer_Weight": 1.719271836009284e-07
+    }
+}
