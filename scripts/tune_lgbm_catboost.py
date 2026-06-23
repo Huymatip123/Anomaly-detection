@@ -65,6 +65,7 @@ try:
         'metric': 'multi_logloss', 'boosting_type': 'gbdt',
         'num_leaves': 31, 'max_depth': -1, 'learning_rate': 0.1,
         'feature_fraction': 0.8, 'bagging_fraction': 0.8, 'bagging_freq': 5,
+        'feature_pre_filter': False, 'min_data_in_leaf': 20,
         'verbose': -1, 'num_threads': -1, 'seed': 42,
     }
     model_lgb = lgb.train(params_lgb, lgb_train,
@@ -93,7 +94,8 @@ try:
         model = lgb.train({
             'objective': 'multiclass', 'num_class': n_classes,
             'metric': 'multi_logloss', 'boosting_type': 'gbdt',
-            'bagging_freq': 5, 'verbose': -1, 'num_threads': -1, 'seed': 42,
+            'bagging_freq': 5, 'feature_pre_filter': False,
+            'verbose': -1, 'num_threads': -1, 'seed': 42,
             **p,
         }, lgb_train, valid_sets=[lgb_val], num_boost_round=500,
            callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)])
