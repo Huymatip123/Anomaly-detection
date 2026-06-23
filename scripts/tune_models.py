@@ -38,6 +38,8 @@ results = []
 
 def evaluate(name, model, X_test_, y_test_):
     preds = model.predict(X_test_)
+    if preds.ndim == 2 and preds.shape[1] > 1:
+        preds = np.argmax(preds, axis=1)
     macro = f1_score(y_test_, preds, average='macro')
     wgt   = f1_score(y_test_, preds, average='weighted')
     print(f'  {name:45s} Macro={macro:.4f}  Weighted={wgt:.4f}')
