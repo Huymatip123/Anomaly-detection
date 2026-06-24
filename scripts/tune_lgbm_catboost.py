@@ -131,6 +131,7 @@ try:
     model_cat = CatBoostClassifier(
         iterations=500, depth=6, learning_rate=0.1,
         loss_function='MultiClass', eval_metric='MultiClass',
+        bootstrap_type='Bernoulli', subsample=0.8,
         random_seed=42, thread_count=-1, verbose=False,
         early_stopping_rounds=20,
     )
@@ -156,6 +157,7 @@ try:
         t0 = time.time()
         model = CatBoostClassifier(
             iterations=500, loss_function='MultiClass', eval_metric='MultiClass',
+            bootstrap_type='Bernoulli',
             random_seed=42, thread_count=-1, verbose=False,
             early_stopping_rounds=20, **p,
         )
