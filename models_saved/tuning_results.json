@@ -1,0 +1,24 @@
+{
+  "xgboost": {
+    "baseline": {"macro_f1": 0.6014, "weighted_f1": 0.9313},
+    "tuned_best": {
+      "macro_f1": 0.6292,
+      "weighted_f1": 0.9333,
+      "val_macro": 0.6185,
+      "params": {
+        "colsample_bytree": 0.8, "gamma": 0, "learning_rate": 0.05,
+        "max_depth": 10, "min_child_weight": 5, "n_estimators": 1000,
+        "reg_alpha": 1.0, "subsample": 0.8
+      }
+    }
+  },
+  "lightgbm": {
+    "baseline": {"macro_f1": 0.5566, "weighted_f1": 0.9287},
+    "tuned_best": {
+      "macro_f1": 0.6244,
+      "weighted_f1": 0.9341,
+      "val_macro": 0.6146,
+      "params": {"num_leaves": 127, "learning_rate": 0.05}
+    }
+  }
+}
